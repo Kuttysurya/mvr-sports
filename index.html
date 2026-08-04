@@ -545,16 +545,23 @@ async function startCamera(){
   const camover = document.getElementById('camover');
   video.style.display='none'; img.style.display='none';
   camover.style.display='flex'; camover.textContent = 'INITIALISING CAMERA...';
-  try{
-    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false});
-    video.srcObject = stream;
-    video.style.display='block';
-    camover.style.display='none';
-  }catch(e){
-    camover.textContent = 'CAMERA UNAVAILABLE — TAP BELOW TO UPLOAD A SELFIE INSTEAD';
-    camover.style.cursor='pointer';
-    camover.onclick = ()=> document.getElementById('fileFallback').click();
+  const constraintsList = [
+    {video:{facingMode:{ideal:'user'}, width:{ideal:720}, height:{ideal:720}}, audio:false},
+    {video:{facingMode:'user'}, audio:false},
+    {video:true, audio:false}
+  ];
+  for(const constraints of constraintsList){
+    try{
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      video.style.display='block';
+      camover.style.display='none';
+      return;
+    }catch(e){ /* try next fallback */ }
   }
+  camover.textContent = 'CAMERA UNAVAILABLE — TAP BELOW TO UPLOAD A SELFIE INSTEAD';
+  camover.style.cursor='pointer';
+  camover.onclick = ()=> document.getElementById('fileFallback').click();
 }
 function stopCamera(){
   if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
