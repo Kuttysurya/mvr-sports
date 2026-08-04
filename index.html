@@ -189,6 +189,7 @@ main{display:none; padding:26px 28px 60px; max-width:1280px; margin:0 auto;}
   width:100%; aspect-ratio:1/1; background:#000; border:1px dashed var(--green-dim); position:relative; overflow:hidden; margin-bottom:14px;
 }
 .camwrap video, .camwrap img{width:100%; height:100%; object-fit:cover; display:block;}
+.camwrap video{transform:scaleX(-1);}
 .camwrap .camover{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--text-dim); font-family:var(--term); font-size:11px; text-align:center; padding:10px;}
 .rowbtns{display:flex; gap:10px;}
 .rowbtns .btn{flex:1; margin-top:0;}
@@ -577,7 +578,11 @@ function captureSelfie(){
   const ctx = canvas.getContext('2d');
   const vw = video.videoWidth, vh = video.videoHeight;
   const s = Math.min(vw,vh);
+  ctx.save();
+  ctx.translate(320, 0);
+  ctx.scale(-1, 1);
   ctx.drawImage(video, (vw-s)/2, (vh-s)/2, s, s, 0, 0, 320, 320);
+  ctx.restore();
   snapshotData = canvas.toDataURL('image/jpeg', 0.8);
   showSnapshot();
 }
