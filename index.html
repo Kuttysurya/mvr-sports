@@ -72,6 +72,10 @@ details ol{margin:8px 0 0;padding-left:22px}
  font-family:var(--disp);font-weight:900;font-size:clamp(30px,9vw,80px);letter-spacing:3px;text-shadow:0 0 22px var(--c,#39ff14);box-shadow:0 8px 40px color-mix(in srgb,var(--c,#39ff14) 50%,transparent);transform:translateY(-130%);transition:transform .18s ease-out;pointer-events:none}
 #banner small{display:block;font-family:var(--mono);font-size:clamp(14px,2.4vw,18px);letter-spacing:3px;font-weight:400}
 #banner.show{transform:translateY(0)}
+#order{margin-top:12px;min-height:1.6em;font-size:17px;color:var(--muted)}
+#order span{display:inline-block;margin:0 6px;padding:2px 8px;border:1px solid var(--muted)}
+#order .cur{color:#000;background:var(--g);border-color:var(--g);font-weight:700}
+#order .bad{text-decoration:line-through;opacity:.55}
 .hide{display:none!important}
 #game{display:grid;grid-template-columns:1.25fr 1fr;grid-template-areas:"timer teams" "ctl teams";column-gap:14px;align-items:start}
 #timerpanel{grid-area:timer}#teams{grid-area:teams}#hostctl,#playctl{grid-area:ctl}
@@ -114,8 +118,8 @@ window.addEventListener('error',function(e){showErr('Script error: '+(e.message|
         <li>Everyone opens this page on their own phone or laptop.</li>
         <li>Players pick a team (A, B, C or D). The host picks "I'm the Host".</li>
         <li>The host reads a question aloud, then taps <b>Start Round</b>.</li>
-        <li>Players tap <b>BUZZ</b> (or press Space). First to buzz stops the clock for everyone.</li>
-        <li>The host taps <b>Correct</b> (+10) or <b>Wrong</b> (−5).</li>
+        <li>Players tap <b>BUZZ</b> (or press Space). The first team to buzz stops the clock and answers first. Other teams have 3 seconds to join the line.</li>
+        <li>Host taps <b>Correct</b> (+10 points). If <b>Wrong</b>, no points are lost and the turn goes to the next team in buzz order (2nd, then 3rd, then 4th).</li>
       </ol>
     </details>
   </div>
@@ -144,6 +148,7 @@ window.addEventListener('error',function(e){showErr('Script error: '+(e.message|
       <div id="sub"></div>
       <div id="timer">60</div>
       <div class="bar"><i id="barfill"></i></div>
+      <div id="order"></div>
     </div>
  
     <div class="teams" id="teams"></div>
@@ -152,8 +157,8 @@ window.addEventListener('error',function(e){showErr('Script error: '+(e.message|
       <div id="tip"></div>
       <div class="ctrl">
         <button class="btn start" id="bStart" onclick="openBuzzers()">▶ Start Round<small>key: S</small></button>
-        <button class="btn ok" id="bOk" onclick="judge(true)">✔ Correct +10<small>key: C</small></button>
-        <button class="btn bad" id="bBad" onclick="judge(false)">✖ Wrong −5<small>key: X</small></button>
+        <button class="btn ok" id="bOk" onclick="judge(true)">✔ Correct +10 pts<small>key: C</small></button>
+        <button class="btn bad" id="bBad" onclick="judge(false)">✖ Wrong → next team<small>key: X</small></button>
         <button class="btn" id="bReset" onclick="resetRound()">↺ Reset Round</button>
         <button class="btn warn" id="bNew" onclick="newGame()">⟲ New Game</button>
       </div>
@@ -180,7 +185,7 @@ window.FIREBASE_CONFIG={
   appId:"1:838531188635:web:8d2f5921895018b059c33e",
   measurementId:"G-D2RLM4V7J1"
 };
-window.HOST_CODE="Surya@2005";
+window.HOST_CODE="1234";
 // ========================================================
 </script>
 <script>
@@ -190,8 +195,8 @@ const HOST_CODE=window.HOST_CODE||'1234';
 const T=['A','B','C','D'],COL={A:'#ff2a55',B:'#19d3ff',C:'#39ff14',D:'#ffb000'};
 const $=id=>document.getElementById(id);
 const uid=Math.random().toString(36).slice(2,8);
-const defState=()=>({round:0,turn:0,status:'idle',endsAt:0,remaining:60,lockedTeams:[],buzzTeam:null,scores:{A:0,B:0,C:0,D:0}});
-let db=null,role=null,myTeam=null,S=defState(),turnW=null,turnKey='',unsubTurn=null,offset=0,conn=false,
+const defState=()=>({round:0,cursor:0,status:'idle',endsAt:0,remaining:60,queueUntil:0,scores:{A:0,B:0,C:0,D:0}});
+let db=null,role=null,myTeam=null,S=defState(),queue=[],turnKey='',unsubTurn=null,offset=0,conn=false,
     joined={},busy=false,myMsg='',lastSound='',soundOn=true,q=Promise.resolve(),confirmT=null,myRef=null;
 const now=()=>Date.now()+offset;   // server-synced clock = fair for everyone
  
@@ -228,7 +233,7 @@ function setLive(){const l=$('live');l.textContent=conn?'● live':'○ connecti
     db.ref('.info/connected').on('value',s=>{conn=!!s.val();setLive();if(conn){$('err').style.display='none';if(role==='player')register()}});
     db.ref('game/state').on('value',s=>{
       const d=s.val()||{},b=defState();
-      S={...b,...d,scores:{...b.scores,...(d.scores||{})},lockedTeams:d.lockedTeams||[]};
+      S={...b,...d,scores:{...b.scores,...(d.scores||{})}};
       onState();
     },e=>showErr('Database refused access: '+e.message+' — publish the rules in Realtime Database → Rules.'));
     db.ref('joined').on('value',s=>{const v=s.val()||{};joined={};T.forEach(t=>joined[t]=v[t]?Object.keys(v[t]).length:0);render()},()=>{});
@@ -272,43 +277,64 @@ function leave(){
 }
  
 // ---------- shared state ----------
+const QUEUE_WINDOW_MS=3000;   // after the first buzz, other teams have 3 seconds to join the line
 function onState(){
-  const key=S.round>0?`r${S.round}t${S.turn}`:'';
+  const key=S.round>0?`r${S.round}`:'';
   if(key!==turnKey){
-    turnKey=key;turnW=null;myMsg='';busy=false;
+    turnKey=key;queue=[];myMsg='';busy=false;
     if(unsubTurn){unsubTurn();unsubTurn=null}
-    if(key){const ref=db.ref(`rounds/${key}/winner`);const cb=ref.on('value',s=>{turnW=s.val();onTurn()});unsubTurn=()=>ref.off('value',cb)}
+    if(key){
+      const ref=db.ref(`rounds/${key}/buzzes`);
+      const cb=ref.on('value',s=>{
+        const v=s.val()||{};
+        queue=T.filter(t=>v[t]&&v[t].at).map(t=>({team:t,at:v[t].at})).sort((a,b)=>a.at-b.at||a.team.localeCompare(b.team));
+        onQueue();
+      });
+      unsubTurn=()=>ref.off('value',cb);
+    }
   }
-  render();
+  checkSound();render();
 }
-function winnerTeam(){return turnW&&T.includes(turnW.team)?turnW.team:null}
-function onTurn(){
-  const w=winnerTeam();
-  if(w&&lastSound!==turnKey){lastSound=turnKey;sBuzz();setTimeout(()=>speak('Team '+w),450);if(navigator.vibrate)navigator.vibrate(120)}
-  if(role==='host'&&w&&S.status==='open'){
-    const rem=Math.max(0,Math.min(60,((S.endsAt-(turnW.at||now()))/1000)));
-    save({...S,status:'buzzed',buzzTeam:w,remaining:rem});
+// the team currently answering (or who answered correctly)
+function cur(){return (S.status==='buzzed'||S.status==='done')?(queue[S.cursor]||null):null}
+function checkSound(){
+  const c=cur();
+  const k=(c&&S.status==='buzzed')?`${S.round}:${S.cursor}`:'';
+  if(k&&lastSound!==k){lastSound=k;sBuzz();setTimeout(()=>speak('Team '+c.team),450);if(navigator.vibrate)navigator.vibrate(120)}
+}
+function onQueue(){
+  // host: someone is waiting and nobody is answering -> start that team's turn, clock stops
+  if(role==='host'&&S.status==='open'&&queue.length>S.cursor){
+    const e=queue[S.cursor];
+    save({...S,status:'buzzed',remaining:Math.max(0,Math.min(60,(S.endsAt-e.at)/1000)),queueUntil:e.at+QUEUE_WINDOW_MS});
   }
-  render();
+  checkSound();render();
 }
-function save(next){S=next;render();q=q.then(()=>db.ref('game/state').set(next)).catch(e=>console.error(e))}
+function save(next){
+  const clean={};Object.keys(defState()).forEach(k=>clean[k]=next[k]);
+  S=clean;render();q=q.then(()=>db.ref('game/state').set(clean)).catch(e=>console.error(e));
+}
  
 // ---------- host actions ----------
 function openBuzzers(){
   if(role!=='host'||S.status==='open'||S.status==='buzzed')return;
-  save({...S,round:S.round+1,turn:0,status:'open',endsAt:now()+60000,remaining:60,lockedTeams:[],buzzTeam:null});
+  save({...S,round:S.round+1,cursor:0,status:'open',endsAt:now()+60000,remaining:60,queueUntil:0});
 }
 function judge(ok){
-  if(role!=='host'||S.status!=='buzzed'||!S.buzzTeam)return;
-  const t=S.buzzTeam,sc={...S.scores};
-  if(ok){sc[t]+=10;sOk();save({...S,scores:sc,status:'done'})}
-  else{
-    sc[t]-=5;sBad();const lk=[...S.lockedTeams,t];
-    if(lk.length>=T.length)save({...S,scores:sc,lockedTeams:lk,status:'done'});
-    else save({...S,scores:sc,lockedTeams:lk,turn:S.turn+1,status:'open',endsAt:now()+S.remaining*1000,buzzTeam:null});
+  const c=cur();
+  if(role!=='host'||S.status!=='buzzed'||!c)return;
+  if(ok){
+    const sc={...S.scores};sc[c.team]+=10;sOk();
+    save({...S,scores:sc,status:'done'});
+  }else{
+    sBad();                       // wrong answer: NO points lost
+    const next=S.cursor+1;
+    if(queue.length>next)         save({...S,cursor:next,status:'buzzed'});                       // next team in buzz order
+    else if(queue.length>=T.length)save({...S,cursor:next,status:'done'});                       // everyone answered wrong
+    else                          save({...S,cursor:next,status:'open',endsAt:now()+S.remaining*1000}); // reopen for teams that have not buzzed
   }
 }
-function resetRound(){if(role==='host')save({...S,status:'idle',remaining:60,lockedTeams:[],buzzTeam:null})}
+function resetRound(){if(role==='host')save({...S,status:'idle',remaining:60,cursor:0,queueUntil:0})}
 function newGame(){
   if(role!=='host')return;
   const b=$('bNew');
@@ -318,17 +344,19 @@ function newGame(){
   }
   clearTimeout(confirmT);confirmT=null;b.textContent='⟲ New Game';b.classList.remove('confirm');
   db.ref('rounds').remove();
-  save({...defState()});
+  save(defState());
 }
  
-// ---------- player action: first press wins (atomic transaction) ----------
+// ---------- player action: every team's press is recorded in order ----------
 async function buzz(){
-  if(role!=='player'||S.status!=='open'||S.lockedTeams.includes(myTeam)||busy)return;
+  if(role!=='player'||busy)return;
+  const inQ=queue.some(x=>x.team===myTeam);
+  const winOpen=S.status==='open'||(S.status==='buzzed'&&now()<S.queueUntil);
+  if(!winOpen||inQ)return;
   busy=true;myMsg='Sending…';render();
-  const key=`r${S.round}t${S.turn}`;
   try{
-    const res=await db.ref(`rounds/${key}/winner`).transaction(cur=>cur===null?{team:myTeam,at:now()}:undefined);
-    myMsg=res.committed?'⚡ You buzzed first!':'Too late — another team was faster.';
+    const res=await db.ref(`rounds/r${S.round}/buzzes/${myTeam}`).transaction(c=>c===null?{at:now()}:undefined);
+    myMsg=res.committed?'✔ Buzz recorded':'You already buzzed.';
   }catch(e){myMsg='Network problem — tap BUZZ again.'}
   busy=false;render();
 }
@@ -346,39 +374,67 @@ function timeLeft(){
   return 60;
 }
 function tick(){
-  if(role==='host'&&S.status==='open'&&now()>=S.endsAt&&!winnerTeam()){sBad();save({...S,status:'done',remaining:0})}
-  if(role)renderTimer();
+  if(role==='host'&&S.status==='open'&&now()>=S.endsAt&&queue.length<=S.cursor){sBad();save({...S,status:'done',remaining:0})}
+  if(role){renderTimer();if(role==='player'&&S.status==='buzzed'&&now()<S.queueUntil+400)render()}
 }
 function renderTimer(){const l=timeLeft();$('timer').textContent=Math.ceil(l);$('timer').classList.toggle('low',l<=10&&S.status==='open');$('barfill').style.width=(l/60*100)+'%'}
 function render(){
   if(!role)return;
-  const w=winnerTeam(),live=S.status==='open'||S.status==='buzzed',host=role==='host';
-  const locked=role==='player'&&S.lockedTeams.includes(myTeam);
-  let st,sub='';
-  if(S.status==='idle'){st=host?'Ready to start':'Waiting for the host…';sub=host?'':'Get ready — the host will start the round.'}
-  else if(S.status==='open'){st=host?'Buzzers are open':(locked?'You are locked out':'GO! Press BUZZ!');sub=host?'Waiting for a team to buzz…':(locked?'Your team answered wrong. Others can still buzz.':'')}
-  else if(S.status==='buzzed'){st=(w?`Team ${w} buzzed first!`:'Clock stopped');sub=host?'Ask for their answer, then mark it Correct or Wrong.':(w===myTeam?'Give your answer to the host.':'Wait for the host to judge the answer.')}
-  else{st='Round over';sub=host?'Tap Next Round for the next question.':'Wait for the next question.'}
+  const host=role==='host',s0=S.status,c=cur();
+  const myIdx=queue.findIndex(x=>x.team===myTeam);
+  const winOpen=s0==='open'||(s0==='buzzed'&&now()<S.queueUntil);
+  const secs=Math.max(0,Math.ceil((S.queueUntil-now())/1000));
+  const wrong=queue.slice(0,S.cursor).map(x=>x.team);
+  const nextT=queue[S.cursor+1]?queue[S.cursor+1].team:null;
+  let st='',sub='';
+  if(s0==='idle'){st=host?'Ready to start':'Waiting for the host…';sub=host?'':'Get ready — the host will start the round.'}
+  else if(s0==='open'){
+    if(host){st='Buzzers are open';sub='Waiting for a team to buzz…'}
+    else if(myIdx>=0&&myIdx<S.cursor){st='Your answer was wrong';sub='Other teams can still buzz.'}
+    else if(myIdx>=0){st='You are in line';sub='Wait for your turn.'}
+    else{st='GO! Press BUZZ!'}
+  }
+  else if(s0==='buzzed'&&c){
+    st=`Team ${c.team} is answering`;
+    if(host)sub=`Ask for the answer. Correct = +10 points. Wrong = no penalty, turn goes to ${nextT?'Team '+nextT:'the teams that have not buzzed'}.`;
+    else if(c.team===myTeam)sub='Your turn — give your answer to the host.';
+    else if(myIdx>S.cursor)sub=`You are #${myIdx+1} in line. You answer if the team before you is wrong.`;
+    else if(myIdx>=0)sub='Your answer was wrong.';
+    else if(winOpen)sub=`Quick! Press BUZZ within ${secs}s to join the line.`;
+    else sub='The line is closed. Wait for the next question.';
+  }
+  else{ // done
+    st=c?`Team ${c.team} got it right!`:(queue.length?'No correct answer':'Time is up');
+    sub=host?'Tap Next Round for the next question.':'Wait for the next question.';
+  }
   $('status').textContent=st;$('sub').textContent=sub;
-  $('status').style.color=(w&&live)?COL[w]:'';
+  $('status').style.color=(s0==='buzzed'&&c)?COL[c.team]:'';
   renderTimer();
+  $('order').innerHTML=queue.length?'Buzz order: '+queue.map((x,i)=>`<span class="${i<S.cursor?'bad':(i===S.cursor&&s0!=='idle'?'cur':'')}">${i+1}·${x.team}</span>`).join(''):'';
   const b=$('banner');
-  if(w&&live){$('bname').textContent='TEAM '+w;b.style.setProperty('--c',COL[w]);b.classList.add('show')}else b.classList.remove('show');
-  $('teams').innerHTML=T.map(t=>`<div class="team${S.lockedTeams.includes(t)?' locked':''}${w===t&&live?' winner':''}${t===myTeam?' me':''}" style="--c:${COL[t]}">
-    <b>TEAM ${t}${t===myTeam?' (you)':''}</b><div class="score">${S.scores[t]}</div><small>${S.lockedTeams.includes(t)?'locked out':(joined[t]?'● '+joined[t]+' online':'not joined')}</small></div>`).join('');
+  if(s0==='buzzed'&&c){$('bname').textContent='TEAM '+c.team;b.querySelector('small').textContent=S.cursor===0?'FIRST TO BUZZ':'NEXT IN LINE';b.style.setProperty('--c',COL[c.team]);b.classList.add('show')}else b.classList.remove('show');
+  $('teams').innerHTML=T.map(t=>{
+    const qi=queue.findIndex(x=>x.team===t);
+    const isWrong=wrong.includes(t),isCur=s0==='buzzed'&&c&&c.team===t;
+    let line=joined[t]?'● '+joined[t]+' online':'not joined';
+    if(isWrong)line='answered wrong';else if(isCur)line='answering now';else if(qi>S.cursor&&s0!=='idle')line=`#${qi+1} in line`;
+    return `<div class="team${isWrong?' locked':''}${isCur?' winner':''}${t===myTeam?' me':''}" style="--c:${COL[t]}">
+    <b>TEAM ${t}${t===myTeam?' (you)':''}</b><div class="score">${S.scores[t]}</div><small>${line}</small></div>`}).join('');
   if(host){
-    $('bStart').disabled=live;$('bOk').disabled=S.status!=='buzzed';$('bBad').disabled=S.status!=='buzzed';$('bReset').disabled=S.status==='idle';
-    $('bStart').firstChild.nodeValue=S.status==='done'?'▶ Next Round':'▶ Start Round';
-    $('tip').textContent={idle:'Step 1: read your question aloud, then tap Start Round.',open:'Step 2: waiting for a team to buzz. The 60-second clock is running.',
-      buzzed:`Step 3: Team ${S.buzzTeam||w||''} buzzed first. Tap Correct or Wrong.`,done:'Round finished. Tap Next Round when you are ready.'}[S.status];
+    const ready=s0==='buzzed'&&!!c;
+    $('bStart').disabled=(s0==='open'||s0==='buzzed');$('bOk').disabled=!ready;$('bBad').disabled=!ready;$('bReset').disabled=s0==='idle';
+    $('bStart').firstChild.nodeValue=s0==='done'?'▶ Next Round':'▶ Start Round';
+    $('tip').textContent={idle:'Step 1: read your question aloud, then tap Start Round.',
+      open:'Step 2: waiting for a team to buzz. The 60-second clock is running.',
+      buzzed:c?`Step 3: Team ${c.team} is answering (buzz #${S.cursor+1}). Tap Correct, or Wrong to move to ${nextT?'Team '+nextT:'any team that has not buzzed'}.`:'',
+      done:'Round finished. Tap Next Round when you are ready.'}[s0];
   }else{
-    const can=S.status==='open'&&!locked&&!busy,bb=$('bigbuzz');
+    const can=winOpen&&myIdx<0&&!busy,bb=$('bigbuzz');
     bb.disabled=!can;
-    bb.firstChild.nodeValue=locked?'LOCKED':(S.status==='open'?'BUZZ':(S.status==='idle'?'WAIT':'STOPPED'));
-    $('msg').textContent=myMsg||(w&&w!==myTeam&&live?`Team ${w} buzzed first.`:'');
+    bb.firstChild.nodeValue=myIdx>=0?`#${myIdx+1}`:(can?'BUZZ':(s0==='idle'?'WAIT':'CLOSED'));
+    $('msg').textContent=myIdx>=0?(myIdx<S.cursor?'Wrong answer — no points lost.':`✔ Buzz recorded — you are #${myIdx+1}`):(myMsg||'');
   }
 }
 </script>
 </body>
 </html>
- 
