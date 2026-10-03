@@ -163,16 +163,30 @@ details ol{margin:8px 0 0;padding-left:22px}
  
 <script>
 // ================= 1. PASTE YOUR FIREBASE CONFIG HERE =================
-const firebaseConfig = {
-  apiKey: "AIzaSyCwO4lrAAiCJChEpwXztYF_8nSbr5-CcCE",
-  authDomain: "mvr-sports-club.firebaseapp.com",
-  databaseURL: "https://mvr-sports-club-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "mvr-sports-club",
-  storageBucket: "mvr-sports-club.firebasestorage.app",
-  messagingSenderId: "838531188635",
-  appId: "1:838531188635:web:8d2f5921895018b059c33e",
-  measurementId: "G-D2RLM4V7J1"
-};
+<script type="module">
+  // Import the functions you need from the SDKs you need
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+  import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-analytics.js";
+  // TODO: Add SDKs for Firebase products that you want to use
+  // https://firebase.google.com/docs/web/setup#available-libraries
+
+  // Your web app's Firebase configuration
+  // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+  const firebaseConfig = {
+    apiKey: "AIzaSyCwO4lrAAiCJChEpwXztYF_8nSbr5-CcCE",
+    authDomain: "mvr-sports-club.firebaseapp.com",
+    databaseURL: "https://mvr-sports-club-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "mvr-sports-club",
+    storageBucket: "mvr-sports-club.firebasestorage.app",
+    messagingSenderId: "838531188635",
+    appId: "1:838531188635:web:8d2f5921895018b059c33e",
+    measurementId: "G-D2RLM4V7J1"
+  };
+
+  // Initialize Firebase
+  const app = initializeApp(firebaseConfig);
+  const analytics = getAnalytics(app);
+</script>
 // ================= 2. CHANGE THE HOST CODE =================
 const HOST_CODE="1234";   // anyone who knows this code can run the game
 // ==========================================================
