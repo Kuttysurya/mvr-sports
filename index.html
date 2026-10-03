@@ -79,6 +79,11 @@ details ol{margin:8px 0 0;padding-left:22px}
 </style>
 </head>
 <body>
+<div id="err" style="display:none;position:sticky;top:0;z-index:200;background:#2a0008;color:#ff8a9c;border-bottom:2px solid #ff2a55;padding:10px 14px;font:15px/1.4 ui-monospace,Menlo,Consolas,monospace"></div>
+<script>
+window.showErr=function(m){var d=document.getElementById('err');d.style.display='block';d.textContent='⚠ '+m};
+window.addEventListener('error',function(e){showErr('Script error: '+(e.message||'unknown')+(e.lineno?' (line '+e.lineno+')':''))});
+</script>
 <div id="banner" role="alert"><small>FIRST TO BUZZ</small><span id="bname"></span></div>
 <div class="wrap">
   <header>
@@ -162,23 +167,25 @@ details ol{margin:8px 0 0;padding-left:22px}
 </div>
  
 <script>
-// ================= 1. PASTE YOUR FIREBASE CONFIG HERE =================
-
-  const firebaseConfig = {
-    apiKey: "AIzaSyCwO4lrAAiCJChEpwXztYF_8nSbr5-CcCE",
-    authDomain: "mvr-sports-club.firebaseapp.com",
-    databaseURL: "https://mvr-sports-club-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "mvr-sports-club",
-    storageBucket: "mvr-sports-club.firebasestorage.app",
-    messagingSenderId: "838531188635",
-    appId: "1:838531188635:web:8d2f5921895018b059c33e",
-    measurementId: "G-D2RLM4V7J1"
-  };
-
- 
-// ================= 2. CHANGE THE HOST CODE =================
-const HOST_CODE="1234";   // anyone who knows this code can run the game
-// ==========================================================
+// ================= EDIT ONLY THIS BLOCK =================
+// 1. Paste your Firebase values between the quotes below (keep the commas and quotes).
+// 2. Change HOST_CODE to your own secret code.
+window.FIREBASE_CONFIG={
+  apiKey:"AIzaSyCwO4lrAAiCJChEpwXztYF_8nSbr5-CcCE",
+  authDomain:"mvr-sports-club.firebaseapp.com",
+  databaseURL:"https://mvr-sports-club-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:"mvr-sports-club",
+  storageBucket:"mvr-sports-club.firebasestorage.app",
+  messagingSenderId:"838531188635",
+  appId:"1:838531188635:web:8d2f5921895018b059c33e",
+  measurementId:"G-D2RLM4V7J1"
+};
+window.HOST_CODE="1234";
+// ========================================================
+</script>
+<script>
+const FIREBASE_CONFIG=window.FIREBASE_CONFIG||{apiKey:'YOUR_API_KEY',databaseURL:'YOUR_'};
+const HOST_CODE=window.HOST_CODE||'1234';
  
 const T=['A','B','C','D'],COL={A:'#ff2a55',B:'#19d3ff',C:'#39ff14',D:'#ffb000'};
 const $=id=>document.getElementById(id);
@@ -204,22 +211,34 @@ function toggleSound(){soundOn=!soundOn;$('sndbtn').textContent=soundOn?'🔊 So
 // ---------- startup ----------
 function setLive(){const l=$('live');l.textContent=conn?'● live':'○ connecting…';l.classList.toggle('off',!conn)}
 (function start(){
-  const ok=!FIREBASE_CONFIG.apiKey.startsWith('YOUR_')&&!FIREBASE_CONFIG.databaseURL.includes('YOUR_');
-  if(!window.firebase){$('nodb').classList.remove('hide');$('live').textContent='○ offline';return}
-  if(!ok){$('setup').classList.remove('hide');$('live').textContent='○ not set up';return}
-  firebase.initializeApp(FIREBASE_CONFIG);db=firebase.database();
-  $('pick').innerHTML=T.map(t=>`<button style="--c:${COL[t]}" onclick="enter('${t}')">${t}<small>Team ${t}</small></button>`).join('');
-  $('lobby').classList.remove('hide');
-  db.ref('.info/serverTimeOffset').on('value',s=>{offset=s.val()||0});
-  db.ref('.info/connected').on('value',s=>{conn=!!s.val();setLive();if(conn&&role==='player')register()});
-  db.ref('game/state').on('value',s=>{
-    const d=s.val()||{},b=defState();
-    S={...b,...d,scores:{...b.scores,...(d.scores||{})},lockedTeams:d.lockedTeams||[]};
-    onState();
-  });
-  db.ref('joined').on('value',s=>{const v=s.val()||{};joined={};T.forEach(t=>joined[t]=v[t]?Object.keys(v[t]).length:0);render()});
-  setInterval(tick,250);
-  try{const r=sessionStorage.getItem('qb_role');if(r)enter(r)}catch(e){}
+  try{
+    const c=FIREBASE_CONFIG||{};
+    const urlOk=/^https:\/\/[a-z0-9-.]+\.(firebaseio\.com|firebasedatabase\.app)\/?$/i.test(String(c.databaseURL||'').trim());
+    const filled=c.apiKey&&!String(c.apiKey).startsWith('YOUR_')&&!String(c.databaseURL||'').includes('YOUR_');
+    if(!window.firebase){$('nodb').classList.remove('hide');$('live').textContent='○ offline';return}
+    if(!filled){$('setup').classList.remove('hide');$('live').textContent='○ not set up';return}
+    if(!urlOk){
+      $('setup').classList.remove('hide');$('live').textContent='○ fix databaseURL';
+      showErr('databaseURL looks wrong. Copy it exactly from Realtime Database → Data tab (it starts with https:// and ends with firebaseio.com or firebasedatabase.app). You have: '+c.databaseURL);return;
+    }
+    $('pick').innerHTML=T.map(t=>`<button style="--c:${COL[t]}" onclick="enter('${t}')">${t}<small>Team ${t}</small></button>`).join('');
+    $('lobby').classList.remove('hide');
+    firebase.initializeApp(c);db=firebase.database();
+    db.ref('.info/serverTimeOffset').on('value',s=>{offset=s.val()||0});
+    db.ref('.info/connected').on('value',s=>{conn=!!s.val();setLive();if(conn){$('err').style.display='none';if(role==='player')register()}});
+    db.ref('game/state').on('value',s=>{
+      const d=s.val()||{},b=defState();
+      S={...b,...d,scores:{...b.scores,...(d.scores||{})},lockedTeams:d.lockedTeams||[]};
+      onState();
+    },e=>showErr('Database refused access: '+e.message+' — publish the rules in Realtime Database → Rules.'));
+    db.ref('joined').on('value',s=>{const v=s.val()||{};joined={};T.forEach(t=>joined[t]=v[t]?Object.keys(v[t]).length:0);render()},()=>{});
+    setInterval(tick,250);
+    setTimeout(()=>{if(!conn)showErr("Can't reach the database. Check that databaseURL is exactly the one shown in Realtime Database → Data, and that you are online.")},8000);
+    try{const r=sessionStorage.getItem('qb_role');if(r)enter(r)}catch(e){}
+  }catch(e){
+    showErr('Setup problem: '+e.message);
+    $('setup').classList.remove('hide');
+  }
 })();
  
 // ---------- host login ----------
