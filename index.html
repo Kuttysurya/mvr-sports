@@ -244,8 +244,6 @@ window.addEventListener('error',function(e){showErr('Script error: '+(e.message|
       <div id="tip"></div>
       <div class="ctrl">
         <button class="btn start" id="bStart" onclick="openBuzzers()">Start round<kbd>key S</kbd></button>
-        <button class="btn ok" id="bOk" onclick="judge(true)">Correct +10<kbd>key C</kbd></button>
-        <button class="btn bad" id="bBad" onclick="judge(false)">Wrong, next team<kbd>key X</kbd></button>
         <button class="btn" id="bTeams" onclick="openTeamEdit()">⚙ Manage teams</button>
         <button class="btn" id="bReset" onclick="resetRound()">Reset round</button>
         <button class="btn" id="bNew" onclick="newGame()">New game</button>
@@ -262,7 +260,7 @@ window.addEventListener('error',function(e){showErr('Script error: '+(e.message|
 <script>
 // ================= EDIT ONLY THIS BLOCK =================
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-window.FIREBASE_CONFIG = {
+window.firebaseConfig = {
     apiKey: "AIzaSyCwO4lrAAiCJChEpwXztYF_8nSbr5-CcCE",
     authDomain: "mvr-sports-club.firebaseapp.com",
     databaseURL: "https://mvr-sports-club-default-rtdb.asia-southeast1.firebasedatabase.app",
@@ -373,7 +371,7 @@ function stopBuzzLoop(){
 const sBad=()=>tone(240,.6,'sawtooth',.5,0,110);
 const sOk=()=>[660,880,1100,1320].forEach((f,i)=>tone(f,.2,'sine',.5,i*.1));
 const sBlip=i=>tone(520+i*140,.12,'triangle',.4);
-function toggleSound(){soundOn=!soundOn;if(soundOn){unlock();sOk();if(S.status==='buzzed'&&cur())startBuzzLoop()}else{stopBuzzLoop();try{speechSynthesis.cancel()}catch(e){}}sndUI()}
+function toggleSound(){soundOn=!soundOn;if(soundOn){unlock();sOk();if(S.status==='open'&&queue.length)startBuzzLoop()}else{stopBuzzLoop();try{speechSynthesis.cancel()}catch(e){}}sndUI()}
 
 // ---------- startup ----------
 function setLive(){const l=$('live');l.textContent=conn?'● live':'○ connecting…';l.classList.toggle('off',!conn)}
@@ -446,36 +444,23 @@ function onState(){
   }
   checkSound();render();
 }
-function cur(){return (S.status==='buzzed'||S.status==='done')?(queue[S.cursor]||null):null}
+function cur(){return queue[0]||null}
 // one sound per game event, on every device (the old version only played some sounds on the host)
 function checkSound(){
   const c=cur();let e='';
-  if(S.status==='open')e=S.cursor?'wrong':'start';
-  else if(S.status==='buzzed'&&c)e=S.cursor?'next':'buzz';
-  else if(S.status==='done')e=c?'ok':'fail';
-
-  // Keep the buzzer sounding for the whole answering turn.
-  // Stop it only after the host judges the answer or the round leaves "buzzed".
-  if(S.status==='buzzed' && c) startBuzzLoop();
-  else stopBuzzLoop();
-
-  const k=e?`${S.gid}:${S.round}:${S.cursor}:${S.status}`:'';
-  const quiet=Date.now()-bootAt<1500;             // don't replay old events when the page loads
+  if(S.status==='open')e=c?'buzz':'start';
+  else if(S.status==='done')e='end';
+  // The buzzer keeps sounding from the first buzz until the 60-second round ends.
+  if(S.status==='open'&&c)startBuzzLoop();else stopBuzzLoop();
+  const k=e?`${S.gid}:${S.round}:${e}`:'';
+  const quiet=Date.now()-bootAt<1500;
   const fresh=k&&k!==lastSound&&!quiet;lastSound=k;
   if(!fresh)return;
   if(e==='start')sStart();
-  else if(e==='buzz'){startBuzzLoop();setTimeout(()=>speak(tn(c.team)),450);if(navigator.vibrate)navigator.vibrate(150)}
-  else if(e==='next'){sBad();setTimeout(()=>{startBuzzLoop();speak(tn(c.team))},550)}
-  else if(e==='ok')sOk();
-  else sBad();
+  else if(e==='buzz'){setTimeout(()=>speak(tn(c.team)),450);if(navigator.vibrate)navigator.vibrate(150)}
+  else if(e==='end')sBad();
 }
-function onQueue(){
-  if(role==='host'&&S.status==='open'&&queue.length>S.cursor){
-    const e=queue[S.cursor];
-    save({...S,status:'buzzed',remaining:Math.max(0,Math.min(60,(S.endsAt-e.at)/1000)),queueUntil:e.at+QUEUE_WINDOW_MS});
-  }
-  checkSound();render();
-}
+function onQueue(){checkSound();render()}
 function save(next){
   const clean={};Object.keys(defState()).forEach(k=>clean[k]=next[k]);
   S=clean;render();q=q.then(()=>db.ref('game/state').set(clean)).catch(e=>console.error(e));
@@ -483,19 +468,8 @@ function save(next){
 
 // ---------- host actions ----------
 function openBuzzers(){
-  if(role!=='host'||S.status==='open'||S.status==='buzzed')return;
+  if(role!=='host'||S.status==='open')return;
   save({...S,round:S.round+1,cursor:0,status:'open',endsAt:now()+60000,remaining:60,queueUntil:0});
-}
-function judge(ok){
-  const c=cur();
-  if(role!=='host'||S.status!=='buzzed'||!c)return;
-  if(ok){const sc={...S.scores};sc[c.team]=(sc[c.team]||0)+10;save({...S,scores:sc,status:'done'})}
-  else{                            // wrong answer: NO points lost
-    const next=S.cursor+1;
-    if(queue.length>next)save({...S,cursor:next,status:'buzzed'});
-    else if(queue.length>=T.length)save({...S,cursor:next,status:'done'});
-    else save({...S,cursor:next,status:'open',endsAt:now()+S.remaining*1000});
-  }
 }
 function resetRound(){if(role==='host')save({...S,round:S.round+1,status:'idle',remaining:60,cursor:0,queueUntil:0})}   // new round number clears old buzzes
 function newGame(){
@@ -551,7 +525,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('tm').classList.
 async function buzz(){
   if(role!=='player'||busy)return;
   const inQ=queue.some(x=>x.team===myTeam);
-  const winOpen=S.status==='open'||(S.status==='buzzed'&&now()<S.queueUntil);
+  const winOpen=S.status==='open';
   if(!winOpen||inQ)return;
   sTap();busy=true;myMsg='Sending…';render();
   try{
@@ -564,84 +538,64 @@ document.addEventListener('keydown',e=>{
   if(!role||e.repeat||e.metaKey||e.ctrlKey||e.altKey||/^(INPUT|TEXTAREA)$/.test(e.target.tagName)||!$('tm').classList.contains('hide'))return;
   const k=e.key.toLowerCase();
   if(role==='player'&&(k===' '||k==='enter')){e.preventDefault();buzz()}
-  else if(role==='host'){if(k==='s')openBuzzers();else if(k==='c')judge(true);else if(k==='x')judge(false)}
+  else if(role==='host'){if(k==='s')openBuzzers()}
 });
 
 // ---------- render ----------
 function timeLeft(){
   if(S.status==='open')return Math.max(0,(S.endsAt-now())/1000);
-  if(S.status==='buzzed'||S.status==='done')return S.remaining;
+  if(S.status==='done')return 0;
   return 60;
 }
 function tick(){
-  if(role==='host'&&S.status==='open'&&now()>=S.endsAt&&queue.length<=S.cursor)save({...S,status:'done',remaining:0});
-  if(role){renderTimer();if(role==='player'&&S.status==='buzzed'&&now()<S.queueUntil+400)render()}
+  if(role==='host'&&S.status==='open'&&now()>=S.endsAt)save({...S,status:'done',remaining:0});
+  if(role)renderTimer()
 }
 function renderTimer(){const l=timeLeft();$('timer').textContent=Math.ceil(l);$('timer').classList.toggle('low',l<=10&&S.status==='open');$('barfill').style.width=(l/60*100)+'%'}
 function render(){
   if(!role)return;
-  const host=role==='host',s0=S.status,c=cur();
+  const host=role==='host',s0=S.status,c=cur(),winOpen=s0==='open';
   const myIdx=queue.findIndex(x=>x.team===myTeam);
-  const winOpen=s0==='open'||(s0==='buzzed'&&now()<S.queueUntil);
-  const secs=Math.max(0,Math.ceil((S.queueUntil-now())/1000));
-  const wrong=queue.slice(0,S.cursor).map(x=>x.team);
-  const nextT=queue[S.cursor+1]?queue[S.cursor+1].team:null;
   let st='',sub='';
   if(s0==='idle'){st=host?'Ready to start':'Waiting for the host…';sub=host?'':'Get ready — the host will start the round.'}
   else if(s0==='open'){
-    if(host){st='Buzzers are open';sub='Waiting for a team to buzz…'}
-    else if(myIdx>=0&&myIdx<S.cursor){st='Your answer was wrong';sub='Other teams can still buzz.'}
-    else if(myIdx>=0){st='You are in line';sub='Wait for your turn.'}
-    else st='GO! Press BUZZ!';
+    if(host){st=c?`${tn(c.team)} buzzed first`:'Buzzers are open';sub='Buzzer sounds until the 60 seconds end.'}
+    else if(myIdx>=0){st='You are in!';sub=`You buzzed ${ord(myIdx)}.`}
+    else{st=c?`${tn(c.team)} buzzed first`:'GO! Press BUZZ!';sub=c?'You can still buzz until time is up!':''}
   }
-  else if(s0==='buzzed'&&c){
-    st=`${tn(c.team)} is answering`;
-    if(host)sub=`Ask for the answer. Correct = +10 points. Wrong = no penalty, turn goes to ${nextT?tn(nextT):'the teams that have not buzzed'}.`;
-    else if(c.team===myTeam)sub='Your turn — give your answer to the host.';
-    else if(myIdx>S.cursor)sub=`You are ${ord(myIdx)} in line. You answer if the team before you is wrong.`;
-    else if(myIdx>=0)sub='Your answer was wrong.';
-    else if(winOpen)sub=`Quick! Press BUZZ within ${secs}s to join the line.`;
-    else sub='The line is closed. Wait for the next question.';
-  }
-  else{
-    st=c?`${tn(c.team)} got it right!`:(queue.length?'No correct answer':'Time is up');
-    sub=host?'Tap Next round for the next question.':'Wait for the next question.';
-  }
+  else{st=queue.length?`${tn(c.team)} buzzed first`:'Time is up';sub=host?'Tap Next round for the next question.':'Wait for the next question.'}
   $('status').textContent=st;$('sub').textContent=sub;
-  $('status').style.color=(s0==='buzzed'&&c&&c.team!=='D')?'':'';
-  renderTimer();
+    renderTimer();
   // buzz order: host gets a full 1st–4th board with time gaps, players get a compact strip
   if(host){
     const t0=queue[0]?queue[0].at:0;
     $('order').innerHTML=T.map((_,i)=>{
       const o=ord(i),x=queue[i];
       if(!x)return `<div class="row empty"><i class="rk">${o}</i><b>Waiting…</b></div>`;
-      const stt=i<S.cursor?'wrong':(i===S.cursor&&s0==='buzzed'?'answering':(i===S.cursor&&s0==='done'?'correct':'in line'));
+      const stt=i===0?'first':'in line';
       return `<div class="row ${stt}" style="--c:${COL[x.team]}"><i class="rk">${o}</i><b>${esc(tn(x.team))}</b><span>${i?'+'+((x.at-t0)/1000).toFixed(3)+'s':'first'}</span><em>${stt}</em></div>`}).join('');
-  }else $('order').innerHTML=queue.map((x,i)=>`<span class="pill${i<S.cursor?' bad':''}" style="--c:${COL[x.team]}">${ord(i)} · ${esc(tn(x.team))}</span>`).join('');
+  }else $('order').innerHTML=queue.map((x,i)=>`<span class="pill" style="--c:${COL[x.team]}">${ord(i)} · ${esc(tn(x.team))}</span>`).join('');
   // banner flashes for a moment each time a new team takes the turn
-  const b=$('banner'),bk=(s0==='buzzed'&&c)?`${S.gid}:${S.round}:${S.cursor}`:'';
-  if(bk&&bk!==bannerKey){bannerKey=bk;$('bname').textContent=tn(c.team).toUpperCase();$('bsmall').textContent=S.cursor===0?'First to buzz':'Next in line';b.style.setProperty('--c',COL[c.team]);b.classList.add('show');clearTimeout(bannerT);bannerT=setTimeout(()=>b.classList.remove('show'),2600)}
+  const b=$('banner'),bk=(s0==='open'&&c)?`${S.gid}:${S.round}`:'';
+  if(bk&&bk!==bannerKey){bannerKey=bk;$('bname').textContent=tn(c.team).toUpperCase();$('bsmall').textContent='First to buzz';b.style.setProperty('--c',COL[c.team]);b.classList.add('show');clearTimeout(bannerT);bannerT=setTimeout(()=>b.classList.remove('show'),2600)}
   else if(!bk){bannerKey='';b.classList.remove('show')}
   $('teams').innerHTML=T.map(t=>{
     const qi=queue.findIndex(x=>x.team===t);
-    const isWrong=wrong.includes(t),isCur=s0==='buzzed'&&c&&c.team===t;
+    const isWrong=false,isCur=s0!=='idle'&&c&&c.team===t;
     const jn=jc(t),pl=plist(t);let line=jn?'● '+jn+' online':'not joined';
-    if(isWrong)line='answered wrong';else if(isCur)line='answering now';else if(qi>S.cursor&&s0!=='idle')line=`${ord(qi)} in line`;
+    if(isCur)line='buzzed first';else if(qi>0&&s0!=='idle')line=`buzzed ${ord(qi)}`;
     return `<div class="team${isWrong?' locked':''}${isCur?' winner':''}${t===myTeam?' me':''}" style="--c:${COL[t]}"><div><b>${esc(tn(t))}${t===myTeam?' (you)':''}</b><small>${line}</small>${pl?`<small>👥 ${esc(pl)}</small>`:''}</div><div class="score">${S.scores[t]||0}</div></div>`}).join('');
   if(host){
-    const ready=s0==='buzzed'&&!!c;
-    $('bStart').disabled=(s0==='open'||s0==='buzzed');$('bOk').disabled=!ready;$('bBad').disabled=!ready;$('bReset').disabled=s0==='idle';
+    $('bStart').disabled=(s0==='open');$('bReset').disabled=s0==='idle';
     $('bStart').firstChild.nodeValue=s0==='done'?'Next round':'Start round';
     $('tip').textContent={idle:'Read your question aloud, then tap Start round.',
       open:'Buzzers are open. The 60-second clock is running.',
-      buzzed:c?`${tn(c.team)} is answering (${ord(S.cursor)} to buzz). Tap Correct, or Wrong to move to ${nextT?tn(nextT):'any team that has not buzzed'}.`:'',
       done:'Round finished. Tap Next round when you are ready.'}[s0];
   }else{
     const can=winOpen&&myIdx<0&&!busy,bb=$('bigbuzz');
     bb.disabled=!can;
     bb.firstChild.nodeValue=myIdx>=0?ord(myIdx):(can?'BUZZ':(s0==='idle'?'WAIT':'CLOSED'));
-    $('msg').textContent=myIdx>=0?(myIdx<S.cursor?'Wrong answer — no points lost.':`✔ Buzz recorded — you are ${ord(myIdx)}`):(myMsg||'');
+    $('msg').textContent=myIdx>=0?`✔ Buzz recorded — you are ${ord(myIdx)}`:(myMsg||'');
   }
 }
 </script>
